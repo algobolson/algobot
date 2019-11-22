@@ -5,6 +5,7 @@
 import json
 import logging
 import os
+import signal
 import sys
 
 import algosdk
@@ -40,11 +41,13 @@ def nextblock(algod, lastround=None):
     return b
 
 class Algobot:
-    def __init__(self, algorand_data, block_handlers=None, txn_handlers=None):
+    def __init__(self, algorand_data, block_handlers=None, txn_handlers=None, progress_log_path=None):
         self.algorand_data = algorand_data
         self._algod = None
         self.block_handlers = block_handlers or list()
         self.txn_handlers = txn_handlers or list()
+        self.progress_log_path = progress_log_path
+        self._progresslog = None
         return
 
     def algod(self):
@@ -54,7 +57,7 @@ class Algobot:
 
     def loop(self):
         algod = self.algod()
-        lastround = None
+        lastround = self.recover_progress()
         while True:
             b = nextblock(algod, lastround)
             for bh in self.block_handlers:
@@ -64,11 +67,30 @@ class Algobot:
                 for txn in txns.get('transactions', []):
                     for th in self.txn_handlers:
                         th(b, txn)
-            else:
-                bround = b.get('round')
-                if bround % 10 == 0:
-                    print(bround)
             lastround = b['round']
+            self.record_block_progress(lastround)
+    def record_block_progress(self, round_number):
+        if self._progresslog is None:
+            if self.progress_log_path is None:
+                return
+            self._progresslog = open(self.progress_log_path, 'at')
+        # TODO: if the file is very long, start a new one and move-clobber it over
+        self._progresslog.write('{}\n'.format(round_number))
+        self._progresslog.flush()
+    def recover_progress(self):
+        if self.progress_log_path is None:
+            return None
+        try:
+            with open(self.progress_log_path, 'rt') as fin:
+                fin.seek(0, 2)
+                endpos = fin.tell()
+                fin.seek(max(0, endpos-100))
+                raw = fin.read()
+                lines = raw.splitlines()
+                return int(lines[-1])
+        except Exception as e:
+            logger.info('could not recover progress: %s', e)
+        return None
 
 # block_printer is an example block handler; it takes one arg, the block
 def block_printer(b):
@@ -94,6 +116,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('-d', '--algod', default=None, help='algod data dir')
     ap.add_argument('--verbose', default=False, action='store_true')
+    ap.add_argument('--progress-file', default=None, help='file to write progress to')
     args = ap.parse_args()
 
     if args.verbose:
@@ -107,7 +130,11 @@ def main():
         sys.exit(1)
 
     #bot = Algobot(algorand_data, block_handlers=[block_printer])
-    bot = Algobot(algorand_data, txn_handlers=[big_tx_printer])
+    bot = Algobot(
+        algorand_data,
+        txn_handlers=[big_tx_printer],
+        progress_log_path=args.progress_file,
+    )
     bot.loop()
     return
 

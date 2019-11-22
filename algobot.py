@@ -48,6 +48,7 @@ class Algobot:
         self.txn_handlers = txn_handlers or list()
         self.progress_log_path = progress_log_path
         self._progresslog = None
+        self.go = True
         return
 
     def algod(self):
@@ -58,7 +59,7 @@ class Algobot:
     def loop(self):
         algod = self.algod()
         lastround = self.recover_progress()
-        while True:
+        while self.go:
             b = nextblock(algod, lastround)
             for bh in self.block_handlers:
                 bh(b)
@@ -69,6 +70,7 @@ class Algobot:
                         th(b, txn)
             lastround = b['round']
             self.record_block_progress(lastround)
+        self.close()
     def record_block_progress(self, round_number):
         if self._progresslog is None:
             if self.progress_log_path is None:
@@ -91,6 +93,10 @@ class Algobot:
         except Exception as e:
             logger.info('could not recover progress: %s', e)
         return None
+    def close(self):
+        if self._progresslog is not None:
+            self._progresslog.close()
+            self._progresslog = None
 
 # block_printer is an example block handler; it takes one arg, the block
 def block_printer(b):
@@ -135,6 +141,18 @@ def main():
         txn_handlers=[big_tx_printer],
         progress_log_path=args.progress_file,
     )
+    killcount = [0]
+    def gogently(signum,stackframe):
+        count = killcount[0] + 1
+        if count == 1:
+            sys.stderr.write('signal received. starting graceful shutdown\n')
+            bot.go = False
+            killcount[0] = count
+            return
+        sys.stderr.write('second signal received. bye\n')
+        sys.exit(1)
+    signal.signal(signal.SIGTERM, gogently)
+    signal.signal(signal.SIGINT, gogently)
     bot.loop()
     return
 

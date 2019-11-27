@@ -2,6 +2,7 @@
 #
 # pip install py-algorand-sdk
 
+import argparse
 import base64
 import glob
 import json
@@ -10,6 +11,7 @@ import msgpack
 import os
 import signal
 import sys
+import time
 
 import algosdk
 
@@ -94,6 +96,7 @@ class Algobot:
         self.txn_handlers = txn_handlers or list()
         self.progress_log_path = progress_log_path
         self._progresslog = None
+        self._progresslog_write_count = 0
         self.go = True
         self.raw_api = raw_api
         self.algod_has_block_raw = None
@@ -222,13 +225,27 @@ class Algobot:
             lastround = nowround
 
     def record_block_progress(self, round_number):
+        if self._progresslog_write_count > 100000:
+            if self._progresslog is not None:
+                self._progresslog.close()
+                self._progresslog = None
+            nextpath = self.progress_log_path + '_next_' + time.strftime('%Y%m%d_%H%M%S', time.gmtime())
+            nextlog = open(nextpath, 'xt')
+            nextlog.write('{}\n'.format(round_number))
+            nextlog.flush()
+            nextlog.close() # could probably leave this open and keep writing to it
+            os.replace(nextpath, self.progress_log_path)
+            self._progresslog_write_count = 0
+            # new log at standard location will be opened next time
+            return
         if self._progresslog is None:
             if self.progress_log_path is None:
                 return
             self._progresslog = open(self.progress_log_path, 'at')
-        # TODO: if the file is very long, start a new one and move-clobber it over
+            self._progresslog_write_count = 0
         self._progresslog.write('{}\n'.format(round_number))
         self._progresslog.flush()
+        self._progresslog_write_count += 1
 
     def recover_progress(self):
         if self.progress_log_path is None:
@@ -292,19 +309,16 @@ def big_tx_printer(bot, b, tx):
     if amount > 10000000:
         print(json.dumps(tx, indent=2))
 
-def main(block_handlers=None, txn_handlers=None, arghook=None):
-    import argparse
+def make_arg_parser():
     ap = argparse.ArgumentParser()
     ap.add_argument('-d', '--algod', default=None, help='algod data dir')
     ap.add_argument('--verbose', default=False, action='store_true')
     ap.add_argument('--progress-file', default=None, help='file to write progress to')
     ap.add_argument('--blockfile-glob', default=None, help='file glob of block files')
     ap.add_argument('--raw-api', default=False, action='store_true', help='use raw msgpack api with more data but different layout than json block_info api')
-    args = ap.parse_args()
+    return ap
 
-    if arghook is not None:
-        arghook(args)
-
+def setup(args, block_handlers=None, txn_handlers=None):
     if args.verbose:
         logging.basicConfig(level=logging.DEBUG)
     else:
@@ -341,6 +355,17 @@ def main(block_handlers=None, txn_handlers=None, arghook=None):
         sys.exit(1)
     signal.signal(signal.SIGTERM, gogently)
     signal.signal(signal.SIGINT, gogently)
+
+    return bot
+
+def main(block_handlers=None, txn_handlers=None, arghook=None):
+    ap = make_arg_parser()
+    args = ap.parse_args()
+
+    if arghook is not None:
+        arghook(args)
+
+    bot = setup(args, block_handlers, txn_handlers)
     bot.loop()
     return
 

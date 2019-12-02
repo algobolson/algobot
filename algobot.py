@@ -163,6 +163,7 @@ class Algobot:
                 return self._nextblock_inner(lastround)
             except Exception as e:
                 if trycount >= retries:
+                    logger.error('too many errors in nextblock retries')
                     raise
                 else:
                     logger.warn('error in nextblock(%r) (retrying): %s', lastround, e)

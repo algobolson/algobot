@@ -9,6 +9,7 @@ import json
 import logging
 import msgpack
 import os
+import re
 import signal
 import sys
 import time
@@ -17,17 +18,17 @@ import algosdk
 
 logger = logging.getLogger(__name__)
 
-# algod = get_algod(os.path.join(os.getenv('HOME'),'Algorand/n3/Node1'))
-# algod = get_algod(os.path.join(os.getenv('HOME'),'mainnet'))
+# algod = token_addr_from_algod(os.path.join(os.getenv('HOME'),'Algorand/n3/Node1'))
+# algod = token_addr_from_algod(os.path.join(os.getenv('HOME'),'mainnet'))
 # print(json.dumps(algod.status(), indent=2))
 # b=algod.block_info(algod.status()['lastRound'])
 # print(json.dumps(b, indent=2))
-def get_algod(algorand_data):
+def token_addr_from_algod(algorand_data):
     addr = open(os.path.join(algorand_data, 'algod.net'), 'rt').read().strip()
     if not addr.startswith('http'):
         addr = 'http://' + addr
     token = open(os.path.join(algorand_data, 'algod.token'), 'rt').read().strip()
-    return algosdk.algod.AlgodClient(token, addr)
+    return token, addr
 
 # b = nextblock(algod, b['round'])
 def nextblock(algod, lastround=None):
@@ -36,7 +37,7 @@ def nextblock(algod, lastround=None):
         logger.debug('nextblock status lastRound %s', lastround)
     else:
         try:
-            b = algod.block_info(lastround+1)
+            b = algod.block_info(lastround + 1)
             return b
         except:
             pass
@@ -89,8 +90,11 @@ def make_ob_json_polite(ob):
     return ob
 
 class Algobot:
-    def __init__(self, algorand_data, block_handlers=None, txn_handlers=None, progress_log_path=None, raw_api=None):
+    def __init__(self, algorand_data=None, token=None, addr=None, headers=None, block_handlers=None, txn_handlers=None, progress_log_path=None, raw_api=None):
         self.algorand_data = algorand_data
+        self.token = token
+        self.addr = addr
+        self.headers = headers
         self._algod = None
         self.block_handlers = block_handlers or list()
         self.txn_handlers = txn_handlers or list()
@@ -105,7 +109,12 @@ class Algobot:
 
     def algod(self):
         if self._algod is None:
-            self._algod = get_algod(self.algorand_data)
+            if self.algorand_data:
+                token, addr = token_addr_from_algod(self.algorand_data)
+            else:
+                token = self.token
+                addr = self.addr
+            self._algod = algosdk.algod.AlgodClient(token, addr, headers=self.headers)
         return self._algod
 
     def rawblock(self, xround):
@@ -179,15 +188,15 @@ class Algobot:
             logger.debug('nextblock status lastRound %s', lastround)
         else:
             try:
-                return self.eitherblock(lastround+1)
+                return self.eitherblock(lastround + 1)
             except:
                 pass
         status = algod.status_after_block(lastround)
         nbr = status['lastRound']
-        while (nbr > lastround+1) and self.go:
+        while (nbr > lastround + 1) and self.go:
             # try lastround+1 one last time
             try:
-                return self.eitherblock(lastround+1)
+                return self.eitherblock(lastround + 1)
             except:
                 break
         b = self.eitherblock(nbr)
@@ -255,7 +264,7 @@ class Algobot:
             with open(self.progress_log_path, 'rt') as fin:
                 fin.seek(0, 2)
                 endpos = fin.tell()
-                fin.seek(max(0, endpos-100))
+                fin.seek(max(0, endpos - 100))
                 raw = fin.read()
                 lines = raw.splitlines()
                 return int(lines[-1])
@@ -313,11 +322,24 @@ def big_tx_printer(bot, b, tx):
 def make_arg_parser():
     ap = argparse.ArgumentParser()
     ap.add_argument('-d', '--algod', default=None, help='algod data dir')
+    ap.add_argument('-a', '--addr', default=None, help='algod host:port address')
+    ap.add_argument('-t', '--token', default=None, help='algod API access token')
+    ap.add_argument('--header', dest='headers', nargs='*', help='"Name: value" HTTP header (repeatable)')
     ap.add_argument('--verbose', default=False, action='store_true')
     ap.add_argument('--progress-file', default=None, help='file to write progress to')
     ap.add_argument('--blockfile-glob', default=None, help='file glob of block files')
     ap.add_argument('--raw-api', default=False, action='store_true', help='use raw msgpack api with more data but different layout than json block_info api')
     return ap
+
+def header_list_to_dict(hlist):
+    if not hlist:
+        return None
+    p = re.compile(r':\s+')
+    out = {}
+    for x in hlist:
+        a, b = p.split(x, 1)
+        out[a] = b
+    return out
 
 def setup(args, block_handlers=None, txn_handlers=None):
     if args.verbose:
@@ -326,8 +348,8 @@ def setup(args, block_handlers=None, txn_handlers=None):
         logging.basicConfig(level=logging.INFO)
 
     algorand_data = args.algod or os.getenv('ALGORAND_DATA')
-    if not algorand_data:
-        sys.stderr.write('must specify algod data dir by $ALGORAND_DATA or -d/--algod\n')
+    if not algorand_data and not (args.token and args.addr):
+        sys.stderr.write('must specify algod data dir by $ALGORAND_DATA or -d/--algod; OR --a/--addr and -t/--token\n')
         sys.exit(1)
 
     if block_handlers is None and txn_handlers is None:
@@ -335,6 +357,9 @@ def setup(args, block_handlers=None, txn_handlers=None):
         block_handlers = [block_counter]
     bot = Algobot(
         algorand_data,
+        token=args.token,
+        addr=args.addr,
+        headers=header_list_to_dict(args.headers),
         block_handlers=block_handlers,
         txn_handlers=txn_handlers,
         progress_log_path=args.progress_file,
@@ -345,7 +370,7 @@ def setup(args, block_handlers=None, txn_handlers=None):
         bot.blockfiles = glob.glob(args.blockfile_glob)
 
     killcount = [0]
-    def gogently(signum,stackframe):
+    def gogently(signum, stackframe):
         count = killcount[0] + 1
         if count == 1:
             sys.stderr.write('signal received. starting graceful shutdown\n')
@@ -354,9 +379,9 @@ def setup(args, block_handlers=None, txn_handlers=None):
             return
         sys.stderr.write('second signal received. bye\n')
         sys.exit(1)
+
     signal.signal(signal.SIGTERM, gogently)
     signal.signal(signal.SIGINT, gogently)
-
     return bot
 
 def main(block_handlers=None, txn_handlers=None, arghook=None):

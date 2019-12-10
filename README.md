@@ -1,6 +1,8 @@
 # algobot
 Python framework for handling the stream of Algorand transactions
 
+Generally it works like an http server framework where you register a handler and the framework hands event data to your handler functions.
+
 Requires Algorand Python sdk:
 ``` bash
 pip install py-algorand-sdk

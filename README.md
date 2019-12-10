@@ -25,8 +25,8 @@ def main():
     # maybe do stuff with args you added or override defaults
     bot = algobot.setup(
         args,
-        block_handlers=[algobot.block_counter],
-        txn_handlers=[print_teal_txns],
+        block_handlers=[block_handler],
+        txn_handlers=[txn_handler],
     )
     bot.loop()
 ```
